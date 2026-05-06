@@ -70,13 +70,23 @@ function footerSymbol(bridgeConnected: boolean, mcpReady: boolean): string {
 	return `${bridge} ${mcp}`;
 }
 
+function isStaleSessionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes("stale after session replacement or reload");
+}
+
 function updateFooterStatus(ctx: {
 	ui: {
 		setStatus: (key: string, value: string) => void;
 	};
-}) {
+}): boolean {
 	const bridgeConnected = cachedStatus?.plugin === "connected";
-	ctx.ui.setStatus("labor", `labor ${footerSymbol(bridgeConnected, mcpConnected)}`);
+	try {
+		ctx.ui.setStatus("labor", `labor ${footerSymbol(bridgeConnected, mcpConnected)}`);
+		return true;
+	} catch (error) {
+		if (isStaleSessionContextError(error)) return false;
+		throw error;
+	}
 }
 
 // ## BRIDGE HTTP
@@ -125,10 +135,11 @@ async function bridgeUndo(): Promise<void> {
 }
 
 // Start the bridge server
-async function startBridge(): Promise<boolean> {
+async function startBridge(signal?: AbortSignal): Promise<boolean> {
 	// Already running?
 	const status = await bridgeStatus();
 	if (status) return true;
+	if (signal?.aborted) return false;
 
 	bridgeProc = spawn("node", [BRIDGE_BIN], {
 		detached: false,
@@ -143,6 +154,10 @@ async function startBridge(): Promise<boolean> {
 
 	// Wait up to 3s for it to start to avoid blocking the main thread
 	for (let i = 0; i < 15; i++) {
+		if (signal?.aborted) {
+			stopBridge();
+			return false;
+		}
 		if (spawnFailed) return false;
 		await new Promise((r) => setTimeout(r, 200));
 		const s = await bridgeStatus(300);
@@ -157,11 +172,11 @@ async function startBridge(): Promise<boolean> {
 
 // Stop the bridge server
 function stopBridge() {
-	if (bridgeProc && bridgeStartedByUs) {
+	if (bridgeProc) {
 		bridgeProc.kill("SIGTERM");
 		bridgeProc = null;
-		bridgeStartedByUs = false;
 	}
+	bridgeStartedByUs = false;
 }
 
 // ## TOOL HELPERS
@@ -503,11 +518,24 @@ function registerFigmaMcp(pi: ExtensionAPI) {
 		}
 	}
 
+	let mcpSessionRun = 0;
+	let mcpStartupAbort: AbortController | null = null;
+
+	function isCurrentMcpSession(run: number, signal: AbortSignal): boolean {
+		return run === mcpSessionRun && !signal.aborted;
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
+		mcpStartupAbort?.abort();
+		const run = ++mcpSessionRun;
+		const controller = new AbortController();
+		mcpStartupAbort = controller;
+
 		(async () => {
-			const signal = AbortSignal.timeout(10_000);
+			const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
 			try {
 				const ok = await initializeMcpSession(signal);
+				if (!isCurrentMcpSession(run, controller.signal)) return;
 				if (!ok) {
 					mcpConnected = false;
 					updateFooterStatus(ctx);
@@ -515,14 +543,22 @@ function registerFigmaMcp(pi: ExtensionAPI) {
 				}
 
 				const tools = await listMcpTools(signal);
+				if (!isCurrentMcpSession(run, controller.signal)) return;
 				mcpConnected = true;
-				updateFooterStatus(ctx);
+				if (!updateFooterStatus(ctx)) return;
 				registerMcpTools(tools);
 			} catch {
+				if (!isCurrentMcpSession(run, controller.signal)) return;
 				mcpConnected = false;
 				updateFooterStatus(ctx);
 			}
 		})();
+	});
+
+	pi.on("session_shutdown", async () => {
+		mcpStartupAbort?.abort();
+		mcpStartupAbort = null;
+		mcpSessionRun++;
 	});
 
 	pi.registerCommand("figma-mcp", {
@@ -550,13 +586,20 @@ export default function (pi: ExtensionAPI) {
 
 	// Lifecycle
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let bridgeSessionRun = 0;
+	let bridgeStartupAbort: AbortController | null = null;
 
-	function startPolling(ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) {
+	function isCurrentBridgeSession(run: number, signal: AbortSignal): boolean {
+		return run === bridgeSessionRun && !signal.aborted;
+	}
+
+	function startPolling(ctx: Parameters<Parameters<typeof pi.on>[1]>[1], run: number, signal: AbortSignal) {
 		if (pollTimer) return;
 		pollTimer = setInterval(async () => {
 			const s = await bridgeStatus();
+			if (!isCurrentBridgeSession(run, signal)) return;
 			cachedStatus = s;
-			updateFooterStatus(ctx);
+			if (!updateFooterStatus(ctx)) stopPolling();
 		}, 3000);
 	}
 
@@ -567,20 +610,38 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function currentBridgeSessionSignal(): AbortSignal {
+		if (!bridgeStartupAbort || bridgeStartupAbort.signal.aborted) {
+			bridgeStartupAbort = new AbortController();
+		}
+		return bridgeStartupAbort.signal;
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
+		bridgeStartupAbort?.abort();
+		const run = ++bridgeSessionRun;
+		const controller = new AbortController();
+		bridgeStartupAbort = controller;
+
 		(async () => {
 			let s = await bridgeStatus();
+			if (!isCurrentBridgeSession(run, controller.signal)) return;
 			if (!s) {
-				await startBridge();
+				await startBridge(controller.signal);
+				if (!isCurrentBridgeSession(run, controller.signal)) return;
 				s = await bridgeStatus();
+				if (!isCurrentBridgeSession(run, controller.signal)) return;
 			}
 			cachedStatus = s;
-			updateFooterStatus(ctx);
-			if (s) startPolling(ctx);
+			if (!updateFooterStatus(ctx)) return;
+			if (s) startPolling(ctx, run, controller.signal);
 		})();
 	});
 
 	pi.on("session_shutdown", async (_event) => {
+		bridgeStartupAbort?.abort();
+		bridgeStartupAbort = null;
+		bridgeSessionRun++;
 		stopPolling();
 		stopBridge();
 	});
@@ -611,11 +672,11 @@ export default function (pi: ExtensionAPI) {
 				cachedStatus = already;
 				updateFooterStatus(ctx);
 				ctx.ui.notify(`figma-labor bridge is already running.\nPlugin: ${already.plugin}`, "info");
-				startPolling(ctx);
+				startPolling(ctx, bridgeSessionRun, currentBridgeSessionSignal());
 				return;
 			}
 			ctx.ui.notify("Starting figma-labor bridge...", "info");
-			const ok = await startBridge();
+			const ok = await startBridge(currentBridgeSessionSignal());
 			if (!ok) {
 				cachedStatus = null;
 				updateFooterStatus(ctx);
@@ -632,7 +693,7 @@ export default function (pi: ExtensionAPI) {
 				`figma-labor bridge started.\nPlugin: ${status?.plugin ?? "disconnected"}`,
 				"success"
 			);
-			startPolling(ctx);
+			startPolling(ctx, bridgeSessionRun, currentBridgeSessionSignal());
 		},
 	});
 
