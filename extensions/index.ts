@@ -596,8 +596,15 @@ export default function (pi: ExtensionAPI) {
 	function startPolling(ctx: Parameters<Parameters<typeof pi.on>[1]>[1], run: number, signal: AbortSignal) {
 		if (pollTimer) return;
 		pollTimer = setInterval(async () => {
+			if (!isCurrentBridgeSession(run, signal)) {
+				stopPolling();
+				return;
+			}
 			const s = await bridgeStatus();
-			if (!isCurrentBridgeSession(run, signal)) return;
+			if (!isCurrentBridgeSession(run, signal)) {
+				stopPolling();
+				return;
+			}
 			cachedStatus = s;
 			if (!updateFooterStatus(ctx)) stopPolling();
 		}, 3000);
