@@ -40,7 +40,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type, type TSchema } from "@sinclair/typebox";
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
-import { registerFlowchartTools } from "./flowchart";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1172,6 +1171,4 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Register flowchart harness tools.
-	registerFlowchartTools(pi, { bridgeStatus, bridgeCommand });
 }
