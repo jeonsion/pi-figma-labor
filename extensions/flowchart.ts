@@ -579,6 +579,17 @@ export function registerFlowchartTools(
     },
   });
 
+  pi.registerCommand("pi-figma", {
+    description: "Send a natural-language Figma flowchart request to the LLM. It will use figma_flowchart_create with your harness rules.",
+    handler: async (args: string, ctx: any) => {
+      const clean = args?.trim();
+      const message = clean
+        ? `Create a Figma flowchart: ${clean}. Use figma_flowchart_create with the spec from examples/tax-document-extraction.json or build a new JSON spec as needed.`
+        : "Show me the figma-pi status and ask what flowchart I want to create.";
+      pi.sendUserMessage(message);
+    },
+  });
+
   pi.registerTool({
     name: "figma_flowchart_create",
     label: "Create Figma Flowchart",
