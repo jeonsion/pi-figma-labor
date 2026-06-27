@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <body style="font: 12px sans-serif; margin: 12px;">
+    <div><strong>Pi Labor Local Bridge</strong></div>
+    <div id="status">Connecting…</div>
+    <script>
+      const statusEl = document.getElementById('status');
+      let ws;
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function connect() {
+        ws = new WebSocket('ws://127.0.0.1:3846');
+        ws.onopen = () => setStatus('Connected to pi bridge');
+        ws.onclose = () => {
+          setStatus('Disconnected. Reconnecting…');
+          setTimeout(connect, 1000);
+        };
+        ws.onerror = () => setStatus('Bridge connection error');
+        ws.onmessage = (event) => {
+          let message;
+          try {
+            message = JSON.parse(event.data);
+          } catch (error) {
+            return;
+          }
+          parent.postMessage({ pluginMessage: { type: 'labor-command', message } }, '*');
+        };
+      }
+
+      window.onmessage = (event) => {
+        const pluginMessage = event.data && event.data.pluginMessage;
+        if (!pluginMessage || pluginMessage.type !== 'labor-response') return;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(pluginMessage.message));
+        }
+      };
+
+      connect();
+    </script>
+  </body>
+</html>

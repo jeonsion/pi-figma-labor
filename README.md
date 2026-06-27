@@ -50,6 +50,7 @@ FIGMA_MCP_PORT=3845 pi
 | `/figma-labor-stop`  | Stop bridge server manually                           |
 | `/figma-labor`       | Show bridge status and Figma plugin connection status |
 | `/figma-mcp`         | Show Figma MCP server status and list available tools |
+| `/figma-pi`          | Show flowchart harness bridge and plugin status       |
 
 ## MCP ↔ Labor
 
@@ -93,6 +94,49 @@ MCP tools are preferred for reading. If MCP is unavailable, Labor will use Figma
 | `labor_undo`                      | Undo the last operation                                        |
 
 Tools are registered when the desktop MCP server is enabled. `/figma-mcp` to see available tools.
+
+## Flowchart harness
+
+This extension includes a structured flowchart renderer. Provide a JSON spec and it renders lanes, nodes, decision diamonds, connector vectors with integrated arrowheads, and verifies the result.
+
+### Tools
+
+| Tool                         | Description                                              |
+| ---------------------------- | -------------------------------------------------------- |
+| `figma_flowchart_create`     | Render a flowchart from a JSON spec with verification    |
+| `figma_flowchart_verify`     | Verify an existing flowchart frame against layout gates  |
+
+### Design rules
+
+- **Vector connectors only.** Connectors are single VectorNodes, not LINE + Polygon pairs.
+- **Integrated arrowheads.** Arrow caps via `strokeCap = "ARROW_LINES"`, no standalone arrowhead nodes.
+- **Diamond shape.** Decision/diamond nodes are 4-point Polygon at 1.5× normalized size.
+- **Content-aware sizing.** Lane and frame dimensions computed from content bounding boxes.
+- **Verification gate.** After render: overlap, disconnected, out-of-bounds, stray-arrowhead checks with auto-retry.
+
+### Spec format
+
+```json
+{
+  "title": "My Flowchart",
+  "subtitle": "Optional description",
+  "lanes": [{ "id": "lane-a", "label": "Lane A" }],
+  "nodes": [{ "id": "start", "label": "Start", "type": "terminator", "lane": "lane-a", "accent": "blue" }],
+  "edges": [{ "from": "start", "to": "next", "label": "YES", "kind": "success" }]
+}
+```
+
+See `examples/tax-document-extraction.json` for a complete example.
+
+### Figma plugin
+
+This repo includes a local Figma dev plugin at `figma-plugin/`. Import it in Figma Desktop:
+
+```
+Plugins → Development → Import plugin from manifest...
+```
+
+Select `figma-plugin/manifest.json`. The plugin is named **Pi Labor Local Bridge**.
 
 ## Available skills
 
