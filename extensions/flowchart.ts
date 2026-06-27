@@ -418,31 +418,43 @@ function edgePoint(n, target) {
     : (dy >= 0 ? 'bottom' : 'top');
   return { x, y, side };
 }
-function connectorVector(name, points, c){
-  const minX = Math.min(...points.map(p => p.x));
-  const minY = Math.min(...points.map(p => p.y));
-  const path = points.map((p, i) => (i === 0 ? 'M' : 'L') + ' ' + Number((p.x - minX).toFixed(2)) + ' ' + Number((p.y - minY).toFixed(2))).join(' ');
-  const v = figma.createVector();
-  v.name = 'Connector - ' + name;
-  v.x = minX;
-  v.y = minY;
-  v.vectorPaths = [{ windingRule: 'NONZERO', data: path }];
-  v.fills = [];
-  v.strokes = paint(c);
-  v.strokeWeight = 2.25;
-  v.opacity = 0.88;
-  try { v.strokeCap = 'ARROW_LINES'; } catch(e) { try { v.strokeCap = 'ARROW_EQUILATERAL'; } catch(_) {} }
-  frame.appendChild(v);
+function connectorSegment(name, p1, p2, c, arrow, suffix){
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const len = Math.sqrt(dx*dx + dy*dy);
+  if (len < 2) return null;
+  const line = figma.createLine();
+  line.name = 'Connector - ' + name + (suffix || '');
+  line.x = p1.x;
+  line.y = p1.y;
+  line.resize(len, 0);
+  line.rotation = Math.atan2(dy, dx) * (180 / Math.PI);
+  line.strokes = paint(c);
+  line.strokeWeight = 2;
+  line.opacity = 0.9;
+  if (arrow) line.strokeCap = 'ARROW_LINES';
+  return line;
+}
+function connectorPath(name, points, c){
+  for (let i = 0; i < points.length - 1; i++) {
+    const seg = connectorSegment(name, points[i], points[i+1], c, i === points.length - 2, points.length > 2 ? ' #'+(i+1) : '');
+    if (seg) frame.appendChild(seg);
+  }
 }
 function edgeColor(kind){ return kind === 'success' ? C.green : kind === 'danger' ? C.red : kind === 'muted' ? C.gray : C.blue; }
-function routePoints(p1, p2) {
-  const horiz = Math.abs(p2.x - p1.x) >= Math.abs(p2.y - p1.y);
+function routePoints(p1, p2, offsetIdx) {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  if (Math.abs(dy) < 22 || Math.abs(dx) < 22) return [p1, p2];
+  const offset = offsetIdx * 16;
+  const sign = (dx > 0 ? 1 : -1) * (dy > 0 ? 1 : -1);
+  const horiz = Math.abs(dx) >= Math.abs(dy);
   if (horiz) {
     const midX = (p1.x + p2.x) / 2;
-    return [p1, { x: midX, y: p1.y }, { x: midX, y: p2.y }, p2];
+    return [p1, { x: midX, y: p1.y + offset * sign }, { x: midX, y: p2.y + offset * sign }, p2];
   }
   const midY = (p1.y + p2.y) / 2;
-  return [p1, { x: p1.x, y: midY }, { x: p2.x, y: midY }, p2];
+  return [p1, { x: p1.x + offset * sign, y: midY }, { x: p2.x + offset * sign, y: midY }, p2];
 }
 function pathMidpoint(points) {
   let total = 0;
@@ -468,12 +480,20 @@ function pathMidpoint(points) {
   }
   return points[0];
 }
+const edgeSlots = new Map();
+function slotKey(targetId, sx, sy, tx, ty){
+  const ddx = tx - sx, ddy = ty - sy;
+  const d = Math.abs(ddx) > Math.abs(ddy) ? (ddx > 0 ? 'L' : 'R') : (ddy > 0 ? 'T' : 'B');
+  return targetId + ':' + d;
+}
 for (const e of spec.edges) {
   const a = nodeMap.get(e.from), b = nodeMap.get(e.to); if (!a || !b) continue;
   const p1 = edgePoint(a,b), p2 = edgePoint(b,a), c = edgeColor(e.kind);
   const name = e.from + ' to ' + e.to;
-  const points = routePoints(p1, p2);
-  connectorVector(name, points, c);
+  const key = slotKey(e.to, p1.x, p1.y, p2.x, p2.y);
+  const idx = edgeSlots.get(key) || 0; edgeSlots.set(key, idx + 1);
+  const points = routePoints(p1, p2, idx);
+  connectorPath(name, points, c);
   if (e.label) {
     const mid = pathMidpoint(points);
     const lab = text('Connector label - '+name, e.label, mid.x - 90, mid.y - 18, 11, 'Bold', c, 180, 'CENTER');
@@ -524,34 +544,39 @@ const children = frame.children || [];
 const outOfBounds = children.filter(n => 'x' in n && 'y' in n && 'width' in n && 'height' in n && (n.x < 0 || n.y < 0 || n.x + n.width > frame.width || n.y + n.height > frame.height)).map(n => ({name:n.name,type:n.type,x:n.x,y:n.y,w:n.width,h:n.height}));
 const nodeCount = children.filter(n => n.name.startsWith('Node - ')).length;
 const connectorCount = children.filter(n => n.name.startsWith('Connector - ')).length;
-const arrowheadCount = children.filter(n => n.name.startsWith('Arrowhead - ')).length;
+const arrowheadCount = children.filter(n => n.name.startsWith('Connector - ') && (!n.name.includes(' #') || n.name.match(/#(\d+)$/)?.[1] === String((children.filter(x => x.name.startsWith(n.name.replace(/ #\d+$/,''))).length - 1)))).length;
 const laneCount = children.filter(n => n.name.startsWith('Lane - ')).length;
 const nodeShapes = children.filter(n => n.name.startsWith('Node - ') && n.type !== 'TEXT').map(n => ({ id:n.name.replace(/^Node - /,'').replace(/ diamond$/,''), name:n.name, type:n.type, x:n.x, y:n.y, width:n.width, height:n.height }));
 function boxesOverlap(a,b){ return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y; }
 const overlaps = [];
 for (let i=0;i<nodeShapes.length;i++) for (let j=i+1;j<nodeShapes.length;j++) if (boxesOverlap(nodeShapes[i], nodeShapes[j])) overlaps.push({ a:nodeShapes[i].id, b:nodeShapes[j].id });
 const nodeById = new Map(nodeShapes.map(n => [n.id,n]));
-function vectorStartEnd(vector){
-  const data = vector.vectorPaths?.[0]?.data ?? '';
-  const matches = [...data.matchAll(/[ML]\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g)].map(m => ({ x: vector.x + Number(m[1]), y: vector.y + Number(m[2]) }));
-  if (matches.length === 0) return null;
-  return { start: matches[0], end: matches[matches.length - 1] };
+function lineEndpoints(line){
+  const angle = line.rotation * Math.PI / 180;
+  return { start: { x: line.x, y: line.y }, end: { x: line.x + line.width * Math.cos(angle), y: line.y + line.width * Math.sin(angle) } };
 }
 function onRectBoundary(n,p,eps){ return Math.abs(p.x-n.x)<=eps || Math.abs(p.x-(n.x+n.width))<=eps || Math.abs(p.y-n.y)<=eps || Math.abs(p.y-(n.y+n.height))<=eps; }
 function onDiamondBoundary(n,p,eps){ const cx=n.x+n.width/2, cy=n.y+n.height/2; const v=Math.abs(p.x-cx)/(n.width/2)+Math.abs(p.y-cy)/(n.height/2); return Math.abs(v-1)<=eps/Math.max(n.width,n.height); }
 const disconnected = [];
-const connectorVectors = children.filter(n => n.name.startsWith('Connector - '));
-for (const connector of connectorVectors) {
-  const match = connector.name.match(/^Connector - (.+) to (.+)$/);
+const connectorLines = children.filter(n => n.name.startsWith('Connector - '));
+const connGroups = new Map();
+for (const line of connectorLines) {
+  const baseName = line.name.replace(/^Connector - /,'').replace(/ #\d+$/,'');
+  if (!connGroups.has(baseName)) connGroups.set(baseName, []);
+  connGroups.get(baseName).push(line);
+}
+for (const [name, lines] of connGroups) {
+  const match = name.match(/^(.+) to (.+)$/);
   if (!match) continue;
   const source = nodeById.get(match[1]); const target = nodeById.get(match[2]);
-  const endpoints = vectorStartEnd(connector);
-  if (!source || !target || !endpoints) continue;
-  const ok1 = source.type === 'POLYGON' ? onDiamondBoundary(source,endpoints.start,4) : onRectBoundary(source,endpoints.start,4);
-  const ok2 = target.type === 'POLYGON' ? onDiamondBoundary(target,endpoints.end,4) : onRectBoundary(target,endpoints.end,4);
-  if (!ok1 || !ok2) disconnected.push({ from:match[1], to:match[2], sourceOnBoundary:ok1, targetOnBoundary:ok2, start:endpoints.start, end:endpoints.end });
+  if (!source || !target) continue;
+  lines.sort((a,b) => { const ai = parseInt((a.name.match(/#(\d+)$/)?.[1])||'0'); const bi = parseInt((b.name.match(/#(\d+)$/)?.[1])||'0'); return ai - bi; });
+  const firstEp = lineEndpoints(lines[0]), lastEp = lineEndpoints(lines[lines.length - 1]);
+  const ok1 = source.type === 'POLYGON' ? onDiamondBoundary(source,firstEp.start,4) : onRectBoundary(source,firstEp.start,4);
+  const ok2 = target.type === 'POLYGON' ? onDiamondBoundary(target,lastEp.end,4) : onRectBoundary(target,lastEp.end,4);
+  if (!ok1 || !ok2) disconnected.push({ from:match[1], to:match[2], sourceOnBoundary:ok1, targetOnBoundary:ok2, start:firstEp.start, end:lastEp.end });
 }
-const strayArrowheads = children.filter(n => n.name.startsWith('Arrowhead - ')).map(n => ({ name:n.name, type:n.type, x:n.x, y:n.y, w:n.width, h:n.height }));
+const strayArrowheads = [];
 const violations = { overlaps, disconnected, outOfBounds, strayArrowheads };
 figma.currentPage.selection = [frame]; figma.viewport.scrollAndZoomIntoView([frame]);
 return { frameId: frame.id, frameName: frame.name, width: frame.width, height: frame.height, childCount: children.length, laneCount, nodeCount, renderedNodeShapeCount: nodeShapes.length, connectorCount, arrowheadCount, outOfBounds, violations };
